@@ -1,0 +1,41 @@
+# =====================
+# File: cyberjournal/theme.css
+# =====================
+* {
+    background: #0a0a0f;
+    color: #bffcff;
+}
+
+Header, Footer {
+    background: #0f0f1a;
+    color: #64ffda;
+    text-style: bold;
+}
+
+Button {
+    background: #151525;
+    color: #64ffda;
+    border: tall #6a00ff;
+    padding: 1 2;
+    margin: 1;
+}
+Button.-primary { background: #1a0033; color: #ff66ff; border: heavy #39ff14; }
+Button:hover { background: #0e0e1a; }
+
+Input, TextArea {
+    background: #0e0e1a;
+    color: #e0e0ff;
+    border: round #6a00ff;
+}
+
+Tabs { background: #0c0c16; color: #39ff14; }
+Tab { color: #64ffda; }
+Tab.-active { color: #ff66ff; text-style: bold; border: wide #39ff14; }
+
+ListView { border: round #6a00ff; }
+Static.title { color: #39ff14; text-style: bold; }
+Static.error { color: #ff5370; }
+Static.hint { color: #8be9fd; }
+
+Screen { align: center middle; }
+Container#card { width: 80%; max-width: 100; border: heavy #39ff14; padding: 2; }
