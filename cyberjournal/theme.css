@@ -1,41 +1,185 @@
-# =====================
-# File: cyberjournal/theme.css
-# =====================
-* {
-    background: #0a0a0f;
-    color: #bffcff;
-}
+/* theme.css — three selectable themes via a single class on <App>:
+   .theme-vt220, .theme-amber, .theme-neon
+   This file uses only Textual-supported selectors & properties.
+*/
 
-Header, Footer {
-    background: #0f0f1a;
-    color: #64ffda;
-    text-style: bold;
-}
-
-Button {
-    background: #151525;
-    color: #64ffda;
-    border: tall #6a00ff;
-    padding: 1 2;
-    margin: 1;
-}
-Button.-primary { background: #1a0033; color: #ff66ff; border: heavy #39ff14; }
-Button:hover { background: #0e0e1a; }
-
-Input, TextArea {
-    background: #0e0e1a;
-    color: #e0e0ff;
-    border: round #6a00ff;
-}
-
-Tabs { background: #0c0c16; color: #39ff14; }
-Tab { color: #64ffda; }
-Tab.-active { color: #ff66ff; text-style: bold; border: wide #39ff14; }
-
-ListView { border: round #6a00ff; }
-Static.title { color: #39ff14; text-style: bold; }
-Static.error { color: #ff5370; }
-Static.hint { color: #8be9fd; }
-
+/* ---------- Common layout (theme-independent) ---------- */
 Screen { align: center middle; }
-Container#card { width: 80%; max-width: 100; border: heavy #39ff14; padding: 2; }
+
+.layer-bg { layer: bg; }
+.layer-ui { layer: ui; align: center middle; }
+
+#base-frame { width: 100; height: 30; }
+#ascii {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  text-align: center;
+}
+
+/* Centered modal card */
+#modal-card {
+  width: 84;
+  max-width: 96%;
+  height: auto;
+  max-height: 45%;
+  overflow: hidden; /* modal never scrolls itself */
+  content-align: center top;
+  padding: 1 2;
+  display: block;
+}
+
+#theme-row { align: center middle; }
+
+Static.title { text-style: bold; }
+Static.hint  { }
+Static.error { }
+
+Button { padding: 0 2; height: 3; margin: 1 1 0 0; }
+Button.-primary { text-style: bold; }
+
+/* ---------- Neutral selection & focus patterns ---------- */
+ListView > ListItem.-highlight {
+  background: #e6e6e6;
+  color: #000;
+  text-style: bold;
+  border: heavy #ffffff;
+}
+
+ListView:focus {
+  border: heavy #ffffff;
+}
+
+Input:focus, TextArea:focus {
+  border: heavy #ffffff;
+}
+
+/* Current line highlight (theme variants override this below) */
+TextArea .current-line {
+  background: #333333;
+}
+
+/* ---------- VT220 (green) ---------- */
+.theme-vt220 * {
+  background: #001100;
+  color: #00ff88; /* makes caret visible immediately */
+}
+
+.theme-vt220 Header, .theme-vt220 Footer {
+  background: #001100;
+  color: #11dd88;
+  border: heavy #00cc66;
+  height: 3;
+}
+
+.theme-vt220 #base-frame   { border: heavy #00cc66; background: #001100; }
+.theme-vt220 #modal-card   { border: heavy #00cc66; background: #001100; }
+.theme-vt220 #ascii        { color: #11dd88; }
+
+.theme-vt220 Static.title  { color: #24ffa8; }
+.theme-vt220 Static.hint   { color: #11dd88; }
+.theme-vt220 Static.error  { color: #ff5370; }
+
+.theme-vt220 Input { border: #00ff88; }
+.theme-vt220 Input .input--cursor {background: #00ff88;}
+.theme-vt220 TextArea { border: round #00cc66; }
+.theme-vt220 TextArea .text-area--cursor { background: #24ffa8; }
+/* Clear caret line highlight for VT220 */
+.theme-vt220 TextArea .current-line {
+  background: #002b00;
+}
+
+.theme-vt220 ListView { border: round #00cc66; }
+.theme-vt220 Button    { border: round #00cc66; }
+.theme-vt220 Button.-primary {
+  border: heavy #24ffa8;
+  color: #24ffa8;
+}
+.theme-vt220 ListView > ListItem.-highlight {
+  background: #004d00;
+  color: #ccffdd;
+  text-style: bold;
+  border: heavy #66ffbb;
+}
+/* ---------- AS/400 Amber ---------- */
+.theme-amber * {
+  background: #1a1200;
+  color: #ffd27a; /* brighter text → visible caret */
+}
+
+.theme-amber Header, .theme-amber Footer {
+  background: #1a1200;
+  color: #ffb84d;
+  border: heavy #ff9900;
+  height: 3;
+}
+.theme-amber ListView > ListItem.-highlight {
+  background: #663d00;
+  color: #fff2cc;
+  text-style: bold;
+  border: heavy #ffcc80;
+}
+.theme-amber #base-frame   { border: heavy #ff9900; background: #1a1200; }
+.theme-amber #modal-card   { border: heavy #ff9900; background: #1a1200; }
+.theme-amber #ascii        { color: #ffb84d; }
+
+.theme-amber Static.title  { color: #ffd27a; }
+.theme-amber Static.hint   { color: #ffb84d; }
+.theme-amber Static.error  { color: #ff6666; }
+
+.theme-amber Input { border: #ffd27a; }
+.theme-amber Input .input--cursor {background: #ffd27a;}
+.theme-amber TextArea { border: round #ff9900; }
+.theme-amber TextArea .text-area--cursor { background: #ffd27a; }
+/* Clear caret line highlight for Amber */
+.theme-amber TextArea .current-line {
+  background: #3a2a00;
+}
+
+.theme-amber ListView { border: round #ff9900; }
+.theme-amber Button    { border: round #ff9900; }
+.theme-amber Button.-primary {
+  border: heavy #ffd27a;
+  color: #ffd27a;
+}
+
+/* ---------- Vector Neon ---------- */
+.theme-neon * {
+  background: #0a0a12;
+  color: #64ffda; /* high contrast caret */
+}
+
+.theme-neon Header, .theme-neon Footer {
+  background: #0a0a12;
+  color: #64ffda;
+  border: heavy #6a00ff;
+  height: 3;
+}
+.theme-neon ListView > ListItem.-highlight {
+  background: #30004d;
+  color: #ff72ff;
+  text-style: bold;
+  border: heavy #b366ff;
+}
+.theme-neon #base-frame   { border: heavy #6a00ff; background: #0a0a12; }
+.theme-neon #modal-card   { border: heavy #6a00ff; background: #0a0a12; }
+.theme-neon #ascii        { color: #64ffda; }
+
+.theme-neon Static.title  { color: #ff72ff; }
+.theme-neon Static.hint   { color: #64ffda; }
+.theme-neon Static.error  { color: #ff5370; }
+
+.theme-neon Input .input--cursor {background: #64ffda;}
+.theme-neon TextArea { border: round #6a00ff; }
+.theme-neon TextArea .text-area--cursor { background: #64ffda; }
+/* Clear caret line highlight for Neon */
+.theme-neon TextArea .current-line {
+  background: #1a0030;
+}
+
+.theme-neon ListView { border: round #6a00ff; }
+.theme-neon Button    { border: round #6a00ff; }
+.theme-neon Button.-primary {
+  border: heavy #64ffda;
+  color: #ff72ff;
+}

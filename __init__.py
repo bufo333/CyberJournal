@@ -1,18 +1,13 @@
-# =====================
-# File: cyberjournal/__init__.py
-# =====================
-"""Cyberjournal package.
+# -*- coding: utf-8 -*-
+"""CyberJournal package.
 
-This package implements a cyberpunk-styled Textual TUI journal with
-row-level AES-GCM encryption and deterministic blind-index search over
-encrypted entries.
+Modules:
+    crypto:    Crypto primitives and key derivation.
+    db:        SQLite schema + async data access.
+    logic:     App logic that composes db + crypto.
+    map:       Helper(s) for ASCII art creation.
+    ui:        Textual-based UI (screens, modals, app).
+    theme.css: Textual CSS theme (loaded by ui.py).
 """
-from __future__ import annotations
 
-__all__ = [
-    "__version__",
-]
-
-__version__ = "0.1.0"
-
-
+__all__ = ["crypto", "db", "logic", "map", "ui"]

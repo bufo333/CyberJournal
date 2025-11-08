@@ -1,22 +1,19 @@
-# =====================
-# File: app.py
-# =====================
-"""Executable entry point for Cyberjournal.
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Application entrypoint for CyberJournal.
 
-Usage
------
-    python app.py
-
-Environment
------------
-- ``CYBERJOURNAL_DB``: Path to the SQLite database file (default: journal_encrypted.sqlite3)
+This file is intentionally minimal. It only boots the Textual UI app.
 """
 from __future__ import annotations
 
 import asyncio
-
 from cyberjournal.ui import CyberJournalApp
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Run the Textual application."""
     asyncio.run(CyberJournalApp().run_async())
+
+
+if __name__ == "__main__":
+    main()
