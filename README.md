@@ -2,6 +2,8 @@
 
 A terminal-first, encrypted personal journal with a retro UI, blind-index search, and optional ASCII mini-maps generated from your entry text.
 
+![Login Screen](media/login.png)
+
 ---
 
 ## ✨ Features
@@ -35,6 +37,8 @@ This means your journal remains private even if the database file is accessed.
 
 Every journal entry can optionally show a **tiny map**, like a miniature biome from a text-based RPG.
 
+![Entry View](media/entry.png)
+
 ### How it works
 
 | Step | Description |
@@ -54,13 +58,11 @@ Every journal entry can optionally show a **tiny map**, like a miniature biome f
 ..###..
 ```
 
-Symbols (depending on theme):
+Symbols:
 - `~` Water
 - `.` Grass / plains
 - `#` Forest
 - `^` Mountain
-
-Maps are small enough to be charming, large enough to feel meaningful.
 
 ---
 
@@ -73,6 +75,8 @@ Maps are small enough to be charming, large enough to feel meaningful.
 | **Search** | Blind-index search by keywords |
 | **View Entry** | View text + map preview |
 | **Settings** | Theme switch / preferences |
+
+![Settings Screen](media/settings.png)
 
 ---
 
