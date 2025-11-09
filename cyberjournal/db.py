@@ -1,20 +1,22 @@
+#! /usr/bin/python3
 # -*- coding: utf-8 -*-
 """SQLite schema and async data access for CyberJournal."""
 from __future__ import annotations
 
-from typing import List, Sequence, Tuple
+from typing import List, Sequence, Tuple, Optional
 import os
-
 import aiosqlite
 
 DB_PATH = os.environ.get("CYBERJOURNAL_DB", "journal_encrypted.sqlite3")
 
 
 # ---------------------------------------------------------------------
-# Schema
+# Base schema (new installs)
 # ---------------------------------------------------------------------
 
-SCHEMA_SQL = """    PRAGMA journal_mode=WAL;
+SCHEMA_SQL = """
+PRAGMA journal_mode=WAL;
+PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS users (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30,10 +32,20 @@ CREATE TABLE IF NOT EXISTS entries (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id         INTEGER NOT NULL,
     created_at      TEXT NOT NULL,
+
+    -- Encrypted title
     title_nonce     BLOB NOT NULL,
     title_ct        BLOB NOT NULL,
+
+    -- Encrypted body
     body_nonce      BLOB NOT NULL,
     body_ct         BLOB NOT NULL,
+
+    -- Optional encrypted map preview (row-level AES-GCM)
+    map_nonce       BLOB,
+    map_ct          BLOB,
+    map_format      TEXT DEFAULT 'ascii',
+
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
@@ -50,14 +62,51 @@ CREATE INDEX IF NOT EXISTS idx_entries_user ON entries(user_id);
 
 
 # ---------------------------------------------------------------------
+# Migrations (existing installs)
+# ---------------------------------------------------------------------
+
+async def _column_exists(db: aiosqlite.Connection, table: str, column: str) -> bool:
+    """Return True if `column` is present in `table`."""
+    cur = await db.execute(f"PRAGMA table_info({table})")
+    rows = await cur.fetchall()
+    await cur.close()
+    for r in rows:
+        # PRAGMA table_info columns: cid, name, type, notnull, default_value, pk
+        if len(r) >= 2 and (r[1] == column or (hasattr(r, "keys") and r["name"] == column)):
+            return True
+    return False
+
+
+async def migrate_db() -> None:
+    """Idempotent migrations for legacy DBs that predate map columns."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("PRAGMA foreign_keys = ON;")
+        # Add map columns if they are missing
+        add_map_cols = []
+        if not await _column_exists(db, "entries", "map_nonce"):
+            add_map_cols.append("ALTER TABLE entries ADD COLUMN map_nonce BLOB;")
+        if not await _column_exists(db, "entries", "map_ct"):
+            add_map_cols.append("ALTER TABLE entries ADD COLUMN map_ct BLOB;")
+        if not await _column_exists(db, "entries", "map_format"):
+            add_map_cols.append("ALTER TABLE entries ADD COLUMN map_format TEXT DEFAULT 'ascii';")
+
+        for stmt in add_map_cols:
+            await db.execute(stmt)
+
+        if add_map_cols:
+            await db.commit()
+
+
+# ---------------------------------------------------------------------
 # Connection / initialization
 # ---------------------------------------------------------------------
 
 async def init_db() -> None:
-    """Create tables if they don't exist."""
+    """Create tables if they don't exist and run lightweight migrations."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(SCHEMA_SQL)
         await db.commit()
+    await migrate_db()
 
 
 # ---------------------------------------------------------------------
@@ -73,6 +122,7 @@ async def get_user_by_username(username: str):
         await cur.close()
         return row
 
+
 async def insert_user(
     username: str,
     pwd_hash: str,
@@ -84,9 +134,10 @@ async def insert_user(
     """Insert a newly registered user."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            """                INSERT INTO users (username, pwd_hash, kek_salt, dek_wrapped, dek_wrap_nonce, created_at)
+            """
+            INSERT INTO users (username, pwd_hash, kek_salt, dek_wrapped, dek_wrap_nonce, created_at)
             VALUES (?, ?, ?, ?, ?, ?)
-            """.strip(),
+            """,
             (username, pwd_hash, kek_salt, dek_wrapped, dek_wrap_nonce, created_at),
         )
         await db.commit()
@@ -99,22 +150,30 @@ async def insert_user(
 async def insert_entry_row(
     user_id: int,
     created_at: str,
-    title_nonce: bytes,
-    title_ct: bytes,
-    body_nonce: bytes,
-    body_ct: bytes,
+    t_nonce: bytes,
+    t_ct: bytes,
+    b_nonce: bytes,
+    b_ct: bytes,
+    m_nonce: Optional[bytes] = None,
+    m_ct: Optional[bytes] = None,
+    m_fmt: str = "ascii",
 ) -> int:
-    """Insert an encrypted entry; return new entry id."""
+    """Insert an entry row and return new entry id."""
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
-            """                INSERT INTO entries (user_id, created_at, title_nonce, title_ct, body_nonce, body_ct)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """.strip(),
-            (user_id, created_at, title_nonce, title_ct, body_nonce, body_ct),
+            """
+            INSERT INTO entries (
+                user_id, created_at,
+                title_nonce, title_ct,
+                body_nonce, body_ct,
+                map_nonce, map_ct, map_format
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (user_id, created_at, t_nonce, t_ct, b_nonce, b_ct, m_nonce, m_ct, m_fmt),
         )
-        eid = cur.lastrowid
         await db.commit()
-        return int(eid)
+        return cur.lastrowid
+
 
 async def insert_entry_terms(pairs: Sequence[Tuple[int, bytes]]) -> None:
     """Bulk insert blind-index term rows."""
@@ -127,36 +186,44 @@ async def insert_entry_terms(pairs: Sequence[Tuple[int, bytes]]) -> None:
         )
         await db.commit()
 
+
 async def list_entry_headers(user_id: int):
     """Return rows of (id, created_at, title_nonce, title_ct) for a user."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
-            """                SELECT id, created_at, title_nonce, title_ct
-            FROM entries
-            WHERE user_id = ?
-            ORDER BY created_at DESC
-            """.strip(),
+            """
+            SELECT id, created_at, title_nonce, title_ct
+              FROM entries
+             WHERE user_id = ?
+             ORDER BY created_at DESC
+            """,
             (user_id,),
         )
         rows = await cur.fetchall()
         await cur.close()
         return rows
 
+
 async def get_entry_row(user_id: int, entry_id: int):
-    """Return a single entry row or None for this user."""
+    """Return a single entry row (or None) for this user, including optional map fields."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
-            """                SELECT created_at, title_nonce, title_ct, body_nonce, body_ct
-            FROM entries
-            WHERE id = ? AND user_id = ?
-            """.strip(),
+            """
+            SELECT created_at,
+                   title_nonce, title_ct,
+                   body_nonce,  body_ct,
+                   map_nonce,   map_ct,  map_format
+              FROM entries
+             WHERE id = ? AND user_id = ?
+            """,
             (entry_id, user_id),
         )
         row = await cur.fetchone()
         await cur.close()
         return row
+
 
 async def get_entry_ids_for_term(term_hash: bytes) -> List[int]:
     """Return a list of entry ids that contain the given term hash."""
@@ -169,11 +236,16 @@ async def get_entry_ids_for_term(term_hash: bytes) -> List[int]:
         await cur.close()
         return [int(r[0]) for r in rows]
 
-import aiosqlite
 
-async def update_entry_row(entry_id: int, user_id: int,
-                           title_nonce: bytes, title_ct: bytes,
-                           body_nonce: bytes, body_ct: bytes) -> None:
+async def update_entry_row(
+    entry_id: int,
+    user_id: int,
+    title_nonce: bytes,
+    title_ct: bytes,
+    body_nonce: bytes,
+    body_ct: bytes,
+) -> None:
+    """Update the encrypted title/body for an entry."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
@@ -186,8 +258,28 @@ async def update_entry_row(entry_id: int, user_id: int,
         await db.commit()
 
 
+async def update_entry_map_row(
+    entry_id: int,
+    user_id: int,
+    map_nonce: Optional[bytes],
+    map_ct: Optional[bytes],
+    map_format: str = "ascii",
+) -> None:
+    """Update the encrypted map payload (optional helper)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            UPDATE entries
+               SET map_nonce = ?, map_ct = ?, map_format = ?
+             WHERE id = ? AND user_id = ?
+            """,
+            (map_nonce, map_ct, map_format, entry_id, user_id),
+        )
+        await db.commit()
+
+
 async def delete_entry_row(entry_id: int, user_id: int) -> None:
-    # entry_terms uses FK ON DELETE CASCADE, so removing entries row clears terms
+    """Delete an entry; associated terms are removed via FK cascade."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "DELETE FROM entries WHERE id = ? AND user_id = ?",
@@ -197,6 +289,7 @@ async def delete_entry_row(entry_id: int, user_id: int) -> None:
 
 
 async def clear_entry_terms(entry_id: int) -> None:
+    """Remove all term rows for an entry (used when re-indexing after edit)."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM entry_terms WHERE entry_id = ?", (entry_id,))
         await db.commit()

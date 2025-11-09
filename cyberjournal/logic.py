@@ -11,8 +11,8 @@ from pathlib import Path
 from datetime import datetime, timezone
 import json
 import os
-import secrets
-
+import secrets # if not already imported
+from cyberjournal.map import text_to_map, render_colored_map
 from argon2.exceptions import VerifyMismatchError
 
 from . import db
@@ -135,15 +135,32 @@ async def login_user(username: str, password: str) -> SessionKeys:
 
 async def add_entry(sess: SessionKeys, title: str, body: str) -> int:
     """Insert an encrypted entry; return new entry id."""
-    created_at = datetime.now(timezone.utc).isoformat()
+    created_at = datetime.utcnow().isoformat()
+
+    # Encrypt title/body (existing behavior)
     t_nonce, t_ct = aesgcm_encrypt(sess.enc_key, title.encode(), aad=sess.username.encode())
     b_nonce, b_ct = aesgcm_encrypt(sess.enc_key, body.encode(), aad=sess.username.encode())
-    eid = await db.insert_entry_row(sess.user_id, created_at, t_nonce, t_ct, b_nonce, b_ct)
 
+    # --- NEW: generate small map text and encrypt ---
+    map_text, map_fmt = _render_entry_map_text(title, body, fmt="ascii", max_side=32)
+    m_nonce, m_ct = aesgcm_encrypt(sess.enc_key, map_text.encode("utf-8"), aad=sess.username.encode())
+
+    # Write the row (your db.py already supports map_* columns)
+    eid = await db.insert_entry_row(
+        sess.user_id,
+        created_at,
+        t_nonce, t_ct,
+        b_nonce, b_ct,
+        m_nonce, m_ct, map_fmt,
+    )
+
+    # Blind index (existing behavior)
     terms: Set[str] = set(normalize_tokens(title) + normalize_tokens(body))
     pairs = [(eid, hmac_token(sess.search_key, t)) for t in terms]
     await db.insert_entry_terms(pairs)
+
     return eid
+
 
 async def update_entry(sess: SessionKeys, entry_id: int,
                      new_title: str, new_body: str) -> None:
@@ -201,3 +218,37 @@ async def search_entries(sess: SessionKeys, query: str) -> List[int]:
         ids = await db.get_entry_ids_for_term(th)
         id_sets.append(set(ids))
     return sorted(set.intersection(*id_sets), reverse=True) if id_sets else []
+
+def _render_entry_map_text(title: str, body: str, *, fmt: str = "utf", max_side: int = 64) -> tuple[str, str]:
+    """
+    Create a small, deterministic map string for storage alongside the entry.
+    - fmt: one of {"ascii","utf"} — we store this as map_format in DB.
+    - max_side: cap size so entries don't explode the DB.
+    Returns: (map_text, map_format)
+    """
+    text = f"{title}\n{body}".strip()
+    # Generate a capped-size map for TUI-friendly storage
+    openings, types, costs, legend = text_to_map(text, width=max_side, height=12)
+
+    # We store a *plain* (no ANSI color) rendering in DB to keep it small & portable.
+    charset = "ascii" if fmt == "ascii" else "utf"
+    map_text = render_colored_map(types, legend, charset=charset, color=False, border=False)
+    return map_text, fmt
+
+async def get_entry_with_map(sess: SessionKeys, entry_id: int):
+    """Return (created_at, title, body, map_text, map_format) for one entry."""
+    row = await db.get_entry_row(sess.user_id, entry_id)
+    if not row:
+        raise ValueError("Entry not found")
+
+    # decrypt title / body (unchanged)
+    title = aesgcm_decrypt(sess.enc_key, row["title_nonce"], row["title_ct"], aad=sess.username.encode()).decode()
+    body  = aesgcm_decrypt(sess.enc_key, row["body_nonce"],  row["body_ct"],  aad=sess.username.encode()).decode()
+
+    # decrypt map if present
+    map_text = ""
+    map_fmt  = (row["map_format"] or "ascii") if "map_format" in row.keys() else "ascii"
+    if "map_ct" in row.keys() and row["map_ct"]:
+        map_text = aesgcm_decrypt(sess.enc_key, row["map_nonce"], row["map_ct"], aad=sess.username.encode()).decode()
+
+    return row["created_at"], title, body, map_text, map_fmt
