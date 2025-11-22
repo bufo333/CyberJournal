@@ -400,11 +400,18 @@ class JournalHomeScreen(Screen):
             if not ids:
                 self.search_results.append(ListItem(Label("No results.")))
                 return
+
             for eid in ids:
-                created_at, title, _ = await get_entry(self.app.session, eid)
+                try:
+                    created_at, title, _ = await get_entry(self.app.session, eid)
+                except ValueError:
+                    # Entry was deleted or otherwise missing; just skip it quietly
+                    continue
+
                 li = ListItem(Label(f"{created_at} — {title}"))
                 li.data = eid
                 self.search_results.append(li)
+
         elif bid == "open_settings":
             self.app.push_screen(SettingsModal())
         elif bid == "logout":
