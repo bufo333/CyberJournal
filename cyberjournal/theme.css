@@ -1,0 +1,122 @@
+/* theme.css — three selectable themes via a single class on <App>:
+   .theme-vt220, .theme-amber, .theme-neon
+   Only Textual-supported selectors & properties are used.
+*/
+
+/* ---------- Common layout ---------- */
+Screen { align: center middle; }
+
+.layer-bg { layer: bg; }
+.layer-ui { layer: ui; }
+
+#ascii { width: 100%; height: 100%; overflow: hidden; text-align: center; }
+
+#modal-card {
+  width: 96%;
+  max-width: 96%;
+  height: auto;
+  max-height: 85%;
+  overflow: hidden;           /* modal itself doesn't scroll */
+  content-align: center top;
+  padding: 1 2;
+}
+
+/* Two-column row inside the view-entry screen */
+#entry-row { width: 100%; height: 70%; }
+
+/* Left: map pane */
+#map-box {
+  width: 1fr;                 /* share space evenly with the body */
+  max-width: 58%;
+  padding: 0 1 0 0;
+}
+#map {
+  width: 100%;
+  height: auto;
+  max-height: 100h;            /* limit map height to visible area */
+  overflow: auto;             /* map can scroll if tall/wide */
+  text-align: left;
+  text-wrap: nowrap;
+}
+
+/* Right: body pane */
+#body-box {
+  width: 1fr;
+  padding: 0 0 0 1;
+}
+#entry-text {
+  width: 100%;
+  height: auto;
+  max-height: 100h;            /* match map height */
+  overflow: auto;             /* body scrolls independently */
+}
+
+/* Action buttons row */
+#actions { content-align: left middle; margin: 1 0 0 0; }
+
+Static.title { text-style: bold; }
+Static.hint  { }
+Static.error { }
+
+Button { padding: 0 2; height: 3; margin: 1 1 0 0; }
+Button.-primary { text-style: bold; }
+
+/* Make focused inputs obvious (neutral color so it works on all themes) */
+Input:focus, TextArea:focus, ListView:focus { border: heavy #ffffff; }
+
+/* Neutral selection in lists */
+ListView > ListItem.-highlight {
+  background: #d0d0d0; color: #000000; text-style: bold; border: heavy #ffffff;
+}
+
+/* ---------- VT220 (green) ---------- */
+.theme-vt220 ListView > ListItem.-highlight {
+  background: #001100; color: #00ff88; text-style: bold; border: heavy #00cc66;
+}
+.theme-vt220 * { background: #001100; color: #00ff88; }
+.theme-vt220 Header, .theme-vt220 Footer {
+  background: #001100; color: #11dd88; border: heavy #00cc66; height: 3;
+}
+.theme-vt220 Input .input--cursor {background: #00ff88;}
+.theme-vt220 #modal-card { border: heavy #00cc66; background: #001100; }
+.theme-vt220 #map, .theme-vt220 #entry-text { border: round #00cc66; }
+.theme-vt220 Static.title { color: #24ffa8; }
+.theme-vt220 Static.hint  { color: #11dd88; }
+.theme-vt220 Static.error { color: #ff5370; }
+.theme-vt220 Button { border: round #00cc66; }
+.theme-vt220 Button.-primary { border: heavy #24ffa8; color: #24ffa8; }
+.theme-vt220 Input:focus, TextArea:focus, ListView:focus { border: heavy #24ffa8; }
+/* ---------- AS/400 Amber ---------- */
+.theme-amber * { background: #1a1200; color: #ffcc66; }
+.theme-amber Input:focus, TextArea:focus, ListView:focus { border: heavy #ffcc66; }
+.theme-amber Header, .theme-amber Footer {
+  background: #1a1200; color: #ffb84d; border: heavy #ff9900; height: 3;
+}
+.theme-amber ListView > ListItem.-highlight {
+  background: #ffd27a; color: #ffb84d; text-style: bold; border: heavy #ff9900;
+}
+.theme-amber Input .input--cursor {background: #ffd27a;}
+.theme-amber #modal-card { border: heavy #ff9900; background: #1a1200; }
+.theme-amber #map, .theme-amber #entry-text { border: round #ff9900; }
+.theme-amber Static.title { color: #ffd27a; }
+.theme-amber Static.hint  { color: #ffb84d; }
+.theme-amber Static.error { color: #ff6666; }
+.theme-amber Button { border: round #ff9900; }
+.theme-amber Button.-primary { border: heavy #ffd27a; color: #ffd27a; }
+
+/* ---------- Vector Neon ---------- */
+.theme-neon * { background: #0a0a12; color: #9be7ff; }
+.theme-neon Header, .theme-neon Footer {
+  background: #0a0a12; color: #64ffda; border: heavy #6a00ff; height: 3;
+}
+.theme-neon Input .input--cursor {background: #64ffda;}
+.theme-neon ListView > ListItem.-highlight {
+  background: #64ffda; color: #ff72ff; text-style: bold; border: heavy #6a00ff;}
+.theme-neon #modal-card { border: heavy #6a00ff; background: #0a0a12; }
+.theme-neon #map, .theme-neon #entry-text { border: round #6a00ff; }
+.theme-neon Static.title { color: #ff72ff; }
+.theme-neon Static.hint  { color: #64ffda; }
+.theme-neon Static.error { color: #ff5370; }
+.theme-neon Button { border: round #6a00ff; }
+.theme-neon Button.-primary { border: heavy #64ffda; color: #ff72ff; }
+.theme-neon Input:focus, TextArea:focus, ListView:focus { border: heavy #64ffda; }
