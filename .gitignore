@@ -1,0 +1,33 @@
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Database
+*.sqlite3
+*.db
+backups/
+
+# AI tooling
+.ai/
+
+# OS
+.DS_Store
+Thumbs.db

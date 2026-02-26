@@ -1,0 +1,5 @@
+textual
+rich
+aiosqlite
+cryptography
+argon2-cffi
