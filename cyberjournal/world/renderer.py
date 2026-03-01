@@ -67,6 +67,9 @@ def render_world_viewport(
             "name": e["name"],
         }
 
+    # Track if the world has any content at all
+    has_content = bool(tile_map or entity_map)
+
     lines = []
     for dy in range(viewport_h):
         wy = viewport_y + dy
@@ -74,6 +77,8 @@ def render_world_viewport(
         for dx in range(viewport_w):
             wx = viewport_x + dx
             is_cursor = (wx == cursor_x and wy == cursor_y)
+            # Crosshair: show markers on cursor row/col
+            is_crosshair = (wx == cursor_x or wy == cursor_y)
 
             # Check for entity first
             if (wx, wy) in entity_map:
@@ -91,9 +96,15 @@ def render_world_viewport(
 
             if is_cursor:
                 if color:
-                    row_chars.append(f"\x1b[7m{ch}\x1b[0m")  # inverse video
+                    row_chars.append(f"\x1b[7m@\x1b[0m")  # inverse video
                 else:
                     row_chars.append("@")
+            elif is_crosshair and tile_type == "unknown":
+                # Show faint crosshair on empty tiles to help locate cursor
+                if wx == cursor_x:
+                    row_chars.append("|")
+                else:
+                    row_chars.append("-")
             elif color and tile_type != "unknown":
                 code = PALETTE.get(tile_type, PALETTE.get("unknown", "37"))
                 row_chars.append(f"{_fg(code)}{ch}{ANSI_RESET}")
@@ -101,6 +112,15 @@ def render_world_viewport(
                 row_chars.append(ch)
 
         lines.append("".join(row_chars))
+
+    if not has_content:
+        # Overlay a help message in the center of the viewport
+        msg = "[ Empty world — create journal entries to generate terrain ]"
+        center_y = viewport_h // 2 + 2
+        if center_y < len(lines):
+            line = lines[center_y]
+            start = max(0, (viewport_w - len(msg)) // 2)
+            lines[center_y] = line[:start] + msg + line[start + len(msg):]
 
     return "\n".join(lines)
 

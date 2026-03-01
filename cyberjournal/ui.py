@@ -29,6 +29,7 @@ from textual.widgets import (
     ListView,
     Select,
     Static,
+    Switch,
     TabPane,
     TabbedContent,
     TextArea,
@@ -122,13 +123,31 @@ class SettingsModal(ModalScreen[None]):
                 Button("VECTOR NEON", id="t_neon", classes="-primary" if active == "vector_neon" else ""),
             ),
             Static("", classes="separator"),
-            Static("ASCII art background (on/off)", classes="hint"),
-            Input(value="on" if ascii_enabled else "off", id="ascii_toggle"),
+            Horizontal(
+                Static("ASCII art background", classes="hint"),
+                Switch(value=ascii_enabled, id="ascii_toggle"),
+            ),
             TextArea(id="ascii_text", placeholder="Paste ASCII art here..."),
             Horizontal(Button("Save", id="save", classes="-primary"), Button("Close", id="close")),
             id="narrow-card",
             classes="layer-ui",
         )
+
+    async def on_mount(self) -> None:
+        cfg = load_config()
+        ascii_text = cfg.get("ascii_art", "")
+        if ascii_text:
+            self.query_one("#ascii_text", TextArea).text = str(ascii_text)
+
+    def _update_theme_buttons(self, active: str) -> None:
+        """Update button styles to show which theme is active."""
+        mapping = {"vt220_green": "t_green", "as400_amber": "t_amber", "vector_neon": "t_neon"}
+        for key, btn_id in mapping.items():
+            try:
+                btn = self.query_one(f"#{btn_id}", Button)
+                btn.set_class(key == active, "-primary")
+            except Exception:
+                pass
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         cfg = load_config()
@@ -140,9 +159,9 @@ class SettingsModal(ModalScreen[None]):
         elif bid == "t_neon":
             cfg["active_theme"] = "vector_neon"
         elif bid == "save":
-            ascii_toggle = self.query_one("#ascii_toggle", Input).value.strip().lower()
+            ascii_enabled = self.query_one("#ascii_toggle", Switch).value
             ascii_text = self.query_one("#ascii_text", TextArea).text
-            cfg["ascii_art_enabled"] = ascii_toggle in {"1", "true", "on", "yes", "y"}
+            cfg["ascii_art_enabled"] = ascii_enabled
             cfg["ascii_art"] = ascii_text
             save_config(cfg)
             _apply_app_theme(self.app, str(cfg.get("active_theme", "vt220_green")))
@@ -152,10 +171,10 @@ class SettingsModal(ModalScreen[None]):
         elif bid == "close":
             self.dismiss()
             return
+        # Theme button clicked — apply live without dismissing
         save_config(cfg)
         _apply_app_theme(self.app, str(cfg.get("active_theme", "vt220_green")))
-        self.dismiss()
-        await self.app.push_screen(SettingsModal())
+        self._update_theme_buttons(str(cfg.get("active_theme", "vt220_green")))
 
 
 class CreateUserModal(ModalScreen[None]):
@@ -371,7 +390,7 @@ class ConfirmDeleteModal(ModalScreen):
             Static("DELETE ENTRY?", classes="title"),
             Static("This action cannot be undone.", classes="error"),
             Horizontal(
-                Button("Delete", id="yes", classes="-primary"),
+                Button("Delete", id="yes", classes="-danger"),
                 Button("Cancel", id="no")
             ),
             id="narrow-card", classes="layer-ui",
@@ -386,6 +405,32 @@ class ConfirmDeleteModal(ModalScreen):
             except Exception as exc:
                 logger.exception("Entry deletion failed")
                 self.app.notify(str(exc))
+        else:
+            self.dismiss()
+
+
+class ConfirmLogoutModal(ModalScreen):
+    """Confirm logout, warning about unsaved changes."""
+
+    def __init__(self, has_unsaved: bool = False) -> None:
+        super().__init__()
+        self._has_unsaved = has_unsaved
+
+    def compose(self) -> ComposeResult:
+        msg = "You have unsaved text in the editor. Logout anyway?" if self._has_unsaved else "Are you sure you want to logout?"
+        yield Container(
+            Static("LOGOUT?", classes="title"),
+            Static(msg, classes="hint"),
+            Horizontal(
+                Button("Logout", id="yes", classes="-primary"),
+                Button("Cancel", id="no"),
+            ),
+            id="narrow-card", classes="layer-ui",
+        )
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        if (event.button.id or "") == "yes":
+            self.dismiss("logout")
         else:
             self.dismiss()
 
@@ -464,11 +509,12 @@ class NotebookModal(ModalScreen[None]):
     def __init__(self, current_filter: int | None = None) -> None:
         super().__init__()
         self._current_filter = current_filter
+        self._pending_delete: int | None = None
 
     def compose(self) -> ComposeResult:
         yield Container(
             Static("NOTEBOOKS", classes="title"),
-            Static("Select to filter  |  Select active to delete", classes="hint"),
+            Static("Select to filter  |  Long names are truncated", classes="hint"),
             self._nb_list_widget(),
             Static("", classes="separator"),
             Horizontal(
@@ -501,6 +547,7 @@ class NotebookModal(ModalScreen[None]):
             li = ListItem(Label(f"  {name}{active}"))
             li.data = {"id": nb_id, "name": name}
             self.nb_list.append(li)
+        self._pending_delete = None
 
     async def _create_notebook(self) -> None:
         nb_input = self.query_one("#nb_input", Input)
@@ -523,9 +570,18 @@ class NotebookModal(ModalScreen[None]):
         if bid == "create_nb":
             await self._create_notebook()
         elif bid == "show_all":
-            self.dismiss(None)  # signal: clear notebook filter
+            self.dismiss(True)  # signal: clear notebook filter
         elif bid == "close":
-            self.dismiss(-1)  # signal: no change
+            self.dismiss(None)  # signal: no change
+
+    async def on_button_pressed_delete(self, nb_id: int, nb_name: str) -> None:
+        """Delete a notebook after confirmation."""
+        await delete_notebook(self.app.session, nb_id)
+        self.app.notify(f"Notebook '{nb_name}' deleted")
+        if nb_id == self._current_filter:
+            self.dismiss(True)  # clear filter since active notebook deleted
+        else:
+            await self._refresh()
 
     async def on_list_view_selected(self, message: ListView.Selected) -> None:
         data = getattr(message.item, "data", None)
@@ -533,11 +589,14 @@ class NotebookModal(ModalScreen[None]):
             return
         nb_id = data["id"]
         nb_name = data["name"]
-        # If already the active filter, treat as delete
-        if nb_id == self._current_filter:
-            await delete_notebook(self.app.session, nb_id)
-            self.app.notify(f"Notebook '{nb_name}' deleted")
-            self.dismiss(None)  # clear filter since active notebook deleted
+        if self._pending_delete and self._pending_delete == nb_id:
+            # Second click confirms delete
+            await self.on_button_pressed_delete(nb_id, nb_name)
+            self._pending_delete = None
+        elif nb_id == self._current_filter:
+            # First click on active — ask for confirmation
+            self._pending_delete = nb_id
+            self.app.notify(f"Click '{nb_name}' again to delete it")
         else:
             self.dismiss(nb_id)  # signal: filter by this notebook
 
@@ -545,19 +604,23 @@ class NotebookModal(ModalScreen[None]):
 class TemplateModal(ModalScreen[None]):
     """Manage and apply entry templates."""
 
-    def __init__(self, on_select=None) -> None:
+    def __init__(self, on_select=None, current_title: str = "", current_body: str = "") -> None:
         super().__init__()
         self._on_select = on_select
+        self._current_title = current_title
+        self._current_body = current_body
 
     def compose(self) -> ComposeResult:
+        has_content = bool(self._current_title.strip() or self._current_body.strip())
+        hint = "Select to apply  |  Save captures current entry form" if has_content else "Select a template to apply it."
         yield Container(
             Static("TEMPLATES", classes="title"),
-            Static("Select a template to apply it.", classes="hint"),
+            Static(hint, classes="hint"),
             self._tpl_list_widget(),
             Static("", classes="separator"),
             Horizontal(
                 Input(placeholder="template name", id="tpl_name"),
-                Button("Save", id="save_tpl", classes="-primary"),
+                Button("Save Current", id="save_tpl", classes="-primary"),
             ),
             Button("Close", id="close"),
             id="narrow-card", classes="layer-ui",
@@ -589,7 +652,7 @@ class TemplateModal(ModalScreen[None]):
                 self.app.notify("Template name required")
                 return
             try:
-                await create_template(self.app.session, name, "", "")
+                await create_template(self.app.session, name, self._current_title, self._current_body)
                 self.app.notify("Template saved")
                 await self._refresh()
             except Exception as exc:
@@ -844,6 +907,7 @@ class JournalHomeScreen(Screen):
                         self.query_in = Input(placeholder="keywords (AND) or tag:name")
                         yield self.query_in
                         yield Button("Go", id="do_search", classes="-primary -small")
+                    yield Static("Enter keywords (AND logic). Use tag:name to search by tag. Press Enter or Go.", classes="hint")
                     self.search_results = ListView()
                     yield self.search_results
 
@@ -868,21 +932,32 @@ class JournalHomeScreen(Screen):
                 with TabPane("Account"):
                     self.user_label = Static("", classes="meta")
                     yield self.user_label
-                    Static("", classes="separator")
+                    self.stats_label = Static("", classes="meta")
+                    yield self.stats_label
+                    yield Static("", classes="separator")
                     with Horizontal():
                         yield Button("Settings", id="open_settings")
                         yield Button("Password", id="change_password")
                     with Horizontal():
                         yield Button("Export", id="export")
                         yield Button("Import", id="import")
-                    Static("", classes="separator")
+                    yield Static("", classes="separator")
                     yield Button("Logout", id="logout")
 
         yield Footer(classes="layer-ui")
 
+    async def _refresh_stats(self) -> None:
+        """Update account statistics."""
+        try:
+            total = await count_entries(self.app.session)
+            self.stats_label.update(f"Total entries: {total}")
+        except Exception:
+            pass
+
     async def on_mount(self) -> None:
         if self.app.session:
             self.user_label.update(f"Logged in as: {self.app.session.username}")
+        await self._refresh_stats()
         # Initialize calendar to current month
         now = datetime.now(timezone.utc)
         self._cal_year = now.year
@@ -893,6 +968,16 @@ class JournalHomeScreen(Screen):
         # Start auto-save timer
         self._auto_save_timer = self.set_interval(30, self._auto_save_draft)
         # Restore draft if exists
+        try:
+            draft = await get_draft(self.app.session)
+            if draft:
+                title, body = draft
+                if title or body:
+                    self.title_in.value = title
+                    self.body_in.text = body
+                    self.app.notify("Draft restored")
+        except Exception:
+            pass
 
     async def _refresh_notebook_select(self) -> None:
         """Refresh the notebook dropdown in the New Entry tab."""
@@ -908,8 +993,11 @@ class JournalHomeScreen(Screen):
 
     async def on_screen_resume(self) -> None:
         """Restore focus and refresh data when returning from a modal/screen."""
+        if not self.app.session:
+            return
         await self.refresh_list()
         await self._refresh_notebook_select()
+        await self._refresh_stats()
         # Restore focus to the list view (most common return target)
         def _restore() -> None:
             try:
@@ -917,13 +1005,6 @@ class JournalHomeScreen(Screen):
             except Exception:
                 self.focus_next()
         self.call_after_refresh(_restore)
-        draft = await get_draft(self.app.session)
-        if draft:
-            title, body = draft
-            if title or body:
-                self.title_in.value = title
-                self.body_in.text = body
-                self.app.notify("Draft restored")
 
     async def _auto_save_draft(self) -> None:
         """Timer callback to auto-save new entry draft."""
@@ -962,9 +1043,14 @@ class JournalHomeScreen(Screen):
         if not entries:
             self.list_view.append(ListItem(Label("No entries yet. Create one in the New Entry tab!")))
             return
-        for eid, created_at, title, is_fav, wc in entries:
-            star = " *" if is_fav else ""
-            item = ListItem(Label(f"{star} {created_at[:10]} — {title}  [{wc}w]"))
+        mood_icons = {
+            "happy": "+", "sad": "-", "neutral": "~",
+            "anxious": "!", "energetic": "^", "calm": "=",
+        }
+        for eid, created_at, title, is_fav, wc, mood in entries:
+            fav = "[FAV] " if is_fav else ""
+            mood_sym = f" ({mood_icons.get(mood, '')})" if mood and mood in mood_icons else ""
+            item = ListItem(Label(f"{fav}{created_at[:10]} — {title}  [{wc}w]{mood_sym}"))
             item.data = eid
             self.list_view.append(item)
 
@@ -994,6 +1080,32 @@ class JournalHomeScreen(Screen):
         eid = getattr(message.item, "data", None)
         if eid is not None:
             await self.app.push_screen(ViewEntryScreen(entry_id=eid))
+
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input == self.query_in:
+            await self._do_search()
+
+    async def _do_search(self) -> None:
+        q = self.query_in.value.strip()
+        self.search_results.clear()
+        if not q:
+            return
+        if q.startswith("tag:"):
+            tag = q[4:].strip()
+            ids = await search_by_tag(self.app.session, tag)
+        else:
+            ids = await search_entries(self.app.session, q)
+        if not ids:
+            self.search_results.append(ListItem(Label("No results.")))
+            return
+        for eid in ids:
+            try:
+                created_at, title, _ = await get_entry(self.app.session, eid)
+            except Exception:
+                continue
+            li = ListItem(Label(f"{created_at[:10]} — {title}"))
+            li.data = eid
+            self.search_results.append(li)
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id or ""
@@ -1035,24 +1147,7 @@ class JournalHomeScreen(Screen):
             await self.refresh_list()
             self.app.notify("Entry saved")
         elif bid == "do_search":
-            q = self.query_in.value.strip()
-            self.search_results.clear()
-            if q.startswith("tag:"):
-                tag = q[4:].strip()
-                ids = await search_by_tag(self.app.session, tag)
-            else:
-                ids = await search_entries(self.app.session, q)
-            if not ids:
-                self.search_results.append(ListItem(Label("No results.")))
-                return
-            for eid in ids:
-                try:
-                    created_at, title, _ = await get_entry(self.app.session, eid)
-                except Exception:
-                    continue
-                li = ListItem(Label(f"{created_at[:10]} — {title}"))
-                li.data = eid
-                self.search_results.append(li)
+            await self._do_search()
         elif bid == "toggle_sort":
             self._sort_asc = not self._sort_asc
             self._page = 0
@@ -1068,10 +1163,13 @@ class JournalHomeScreen(Screen):
                 await self.refresh_list()
         elif bid == "manage_notebooks":
             def _on_notebook_dismiss(result) -> None:
-                if result == -1:
-                    return  # no change
-                self._notebook_filter = result  # None = show all, int = filter
-                self.call_after_refresh(self.refresh_list)
+                if result is None or result == -1:
+                    return  # no change (includes Escape dismiss)
+                if result is True:
+                    self._notebook_filter = None  # show all
+                else:
+                    self._notebook_filter = result  # int = filter
+                self.run_worker(self.refresh_list())
             await self.app.push_screen(
                 NotebookModal(current_filter=self._notebook_filter),
                 callback=_on_notebook_dismiss,
@@ -1080,7 +1178,11 @@ class JournalHomeScreen(Screen):
             def _on_template(title, body):
                 self.title_in.value = title
                 self.body_in.text = body
-            await self.app.push_screen(TemplateModal(on_select=_on_template))
+            await self.app.push_screen(TemplateModal(
+                on_select=_on_template,
+                current_title=self.title_in.value,
+                current_body=self.body_in.text,
+            ))
         elif bid == "cal_prev":
             self._cal_month -= 1
             if self._cal_month < 1:
@@ -1104,12 +1206,18 @@ class JournalHomeScreen(Screen):
         elif bid == "import":
             await self.app.push_screen(ImportModal())
         elif bid == "logout":
-            self.app.session = None
-            self.dismiss()
+            await self._confirm_logout()
+
+    async def _confirm_logout(self) -> None:
+        has_unsaved = bool(self.title_in.value.strip() or self.body_in.text.strip())
+        def _on_result(result: object) -> None:
+            if result == "logout":
+                self.app.session = None
+                self.dismiss()
+        await self.app.push_screen(ConfirmLogoutModal(has_unsaved=has_unsaved), callback=_on_result)
 
     async def action_logout(self) -> None:
-        self.app.session = None
-        self.dismiss()
+        await self._confirm_logout()
 
     async def action_show_help(self) -> None:
         await self.app.push_screen(HelpModal())
@@ -1154,7 +1262,7 @@ class ViewEntryScreen(Screen):
                 yield Button("Edit", id="edit", classes="-primary")
                 yield Button("Fav", id="fav")
                 yield Button("Tags", id="tags")
-                yield Button("Delete", id="delete")
+                yield Button("Delete", id="delete", classes="-danger")
                 yield Button("Back", id="back")
 
         yield Footer(classes="layer-ui")
@@ -1168,7 +1276,7 @@ class ViewEntryScreen(Screen):
             self.dismiss()
             return
 
-        star = " *" if entry["is_favorite"] else ""
+        star = "[FAV] " if entry["is_favorite"] else ""
         self.title_label.update(f"{star} {entry['title']}")
 
         meta_parts = [f"Created: {entry['created_at'][:19]}"]
@@ -1202,7 +1310,7 @@ class ViewEntryScreen(Screen):
         elif bid == "fav":
             try:
                 new_state = await toggle_favorite(self.app.session, self.entry_id)
-                star = " *" if new_state else ""
+                star = "[FAV] " if new_state else ""
                 self.app.notify("Favorited" if new_state else "Unfavorited")
                 # Refresh title
                 entry = await get_entry_full(self.app.session, self.entry_id)
@@ -1216,7 +1324,7 @@ class ViewEntryScreen(Screen):
         """Restore focus and refresh entry data when returning from a modal."""
         try:
             entry = await get_entry_full(self.app.session, self.entry_id)
-            star = " *" if entry["is_favorite"] else ""
+            star = "[FAV] " if entry["is_favorite"] else ""
             self.title_label.update(f"{star} {entry['title']}")
             self.body_area.text = entry["body"] or ""
         except Exception:

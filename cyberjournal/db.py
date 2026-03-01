@@ -3,13 +3,22 @@
 """SQLite schema and async data access for CyberJournal."""
 from __future__ import annotations
 
-from typing import List, Sequence, Tuple, Optional
+from contextlib import asynccontextmanager
+from typing import AsyncIterator, List, Sequence, Tuple, Optional
 import os
 import aiosqlite
 
 from .errors import DatabaseError, DuplicateUserError, EntryNotFoundError
 
 DB_PATH = os.environ.get("CYBERJOURNAL_DB", "journal_encrypted.sqlite3")
+
+
+@asynccontextmanager
+async def _connect() -> AsyncIterator[aiosqlite.Connection]:
+    """Open a DB connection with foreign keys enabled."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute("PRAGMA foreign_keys = ON")
+        yield conn
 
 
 # ---------------------------------------------------------------------
@@ -165,7 +174,7 @@ async def _table_exists(db: aiosqlite.Connection, table: str) -> bool:
 
 async def migrate_db() -> None:
     """Idempotent migrations for legacy DBs."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         await db.execute("PRAGMA foreign_keys = ON;")
         stmts = []
 
@@ -212,7 +221,7 @@ async def migrate_db() -> None:
 
 async def init_db() -> None:
     """Create tables if they don't exist and run lightweight migrations."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         await db.executescript(SCHEMA_SQL)
         await db.commit()
     await migrate_db()
@@ -224,7 +233,7 @@ async def init_db() -> None:
 
 async def get_user_by_username(username: str):
     """Fetch a user row by *username*; returns Row or None."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute("SELECT * FROM users WHERE username = ?", (username,))
         row = await cur.fetchone()
@@ -234,7 +243,7 @@ async def get_user_by_username(username: str):
 
 async def get_user_security_question(username: str):
     """Fetch the security question for *username*; returns Row or None."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT id, security_question FROM users WHERE username = ?",
@@ -256,7 +265,7 @@ async def insert_user(
     created_at: str,
 ) -> None:
     """Insert a newly registered user."""
-    async with aiosqlite.connect(DB_PATH) as conn:
+    async with _connect() as conn:
         try:
             await conn.execute(
                 """
@@ -296,7 +305,7 @@ async def update_user_credentials(
     dek_wrap_nonce: bytes,
 ) -> None:
     """Update password credentials and wrapped DEK for a user."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         await db.execute(
             """
             UPDATE users
@@ -327,7 +336,7 @@ async def insert_entry_row(
     m_fmt: str = "ascii",
 ) -> int:
     """Insert an entry row and return new entry id."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         cur = await db.execute(
             """
             INSERT INTO entries (
@@ -347,7 +356,7 @@ async def insert_entry_terms(pairs: Sequence[Tuple[int, bytes]]) -> None:
     """Bulk insert blind-index term rows."""
     if not pairs:
         return
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         await db.executemany(
             "INSERT OR IGNORE INTO entry_terms (entry_id, term_hash) VALUES (?, ?)",
             list(pairs),
@@ -357,7 +366,7 @@ async def insert_entry_terms(pairs: Sequence[Tuple[int, bytes]]) -> None:
 
 async def list_entry_headers(user_id: int):
     """Return rows of (id, created_at, title_nonce, title_ct) for a user."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             """
@@ -374,8 +383,8 @@ async def list_entry_headers(user_id: int):
 
 
 async def list_entry_rows_for_user(user_id: int):
-    """Return all entry rows for a user, including encrypted map fields."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    """Return all entry rows for a user, including all encrypted fields."""
+    async with _connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             """
@@ -387,7 +396,11 @@ async def list_entry_rows_for_user(user_id: int):
                    body_ct,
                    map_nonce,
                    map_ct,
-                   map_format
+                   map_format,
+                   mood_nonce,
+                   mood_ct,
+                   weather_nonce,
+                   weather_ct
               FROM entries
              WHERE user_id = ?
              ORDER BY created_at DESC
@@ -399,9 +412,40 @@ async def list_entry_rows_for_user(user_id: int):
         return rows
 
 
+async def list_all_tags_for_user(user_id: int):
+    """Return all tag rows for all entries of a user."""
+    async with _connect() as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            """
+            SELECT et.id, et.entry_id, et.tag_nonce, et.tag_ct, et.tag_hash
+              FROM entry_tags et
+              JOIN entries e ON et.entry_id = e.id
+             WHERE e.user_id = ?
+            """,
+            (user_id,),
+        )
+        rows = await cur.fetchall()
+        await cur.close()
+        return rows
+
+
+async def list_all_drafts_for_user(user_id: int):
+    """Return all draft rows for a user."""
+    async with _connect() as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT id, title_nonce, title_ct, body_nonce, body_ct FROM drafts WHERE user_id = ?",
+            (user_id,),
+        )
+        rows = await cur.fetchall()
+        await cur.close()
+        return rows
+
+
 async def get_entry_row(user_id: int, entry_id: int):
     """Return a single entry row (or None) for this user, including optional map fields."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             """
@@ -421,7 +465,7 @@ async def get_entry_row(user_id: int, entry_id: int):
 
 async def get_entry_ids_for_term(term_hash: bytes) -> List[int]:
     """Return a list of entry ids that contain the given term hash."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         cur = await db.execute(
             "SELECT entry_id FROM entry_terms WHERE term_hash = ?",
             (term_hash,),
@@ -440,7 +484,7 @@ async def update_entry_row(
     body_ct: bytes,
 ) -> None:
     """Update the encrypted title/body for an entry."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         await db.execute(
             """
             UPDATE entries
@@ -464,7 +508,7 @@ async def update_entry_row_with_map(
     map_format: str = "ascii",
 ) -> None:
     """Update encrypted title/body/map data for an entry."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         await db.execute(
             """
             UPDATE entries
@@ -500,7 +544,7 @@ async def update_entry_map_row(
     map_format: str = "ascii",
 ) -> None:
     """Update the encrypted map payload (optional helper)."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         await db.execute(
             """
             UPDATE entries
@@ -514,7 +558,7 @@ async def update_entry_map_row(
 
 async def delete_entry_row(entry_id: int, user_id: int) -> None:
     """Delete an entry; associated terms are removed via FK cascade."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         await db.execute(
             "DELETE FROM entries WHERE id = ? AND user_id = ?",
             (entry_id, user_id),
@@ -524,7 +568,7 @@ async def delete_entry_row(entry_id: int, user_id: int) -> None:
 
 async def delete_entries_for_user(user_id: int) -> None:
     """Delete all entries for a user; terms cascade via foreign keys."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         await db.execute(
             "DELETE FROM entries WHERE user_id = ?",
             (user_id,),
@@ -540,29 +584,31 @@ async def change_password_atomically(
     dek_wrap_nonce: bytes,
     entry_updates: List[dict],
     term_updates: List[Tuple[int, List[Tuple[int, bytes]]]],
+    tag_updates: List[dict] | None = None,
+    notebook_updates: List[dict] | None = None,
+    template_updates: List[dict] | None = None,
+    draft_updates: List[dict] | None = None,
 ) -> None:
-    """Atomically re-encrypt all entries and update user credentials in one transaction.
-
-    entry_updates: list of dicts with keys: id, title_nonce, title_ct, body_nonce, body_ct,
-                   map_nonce, map_ct, map_format
-    term_updates: list of (entry_id, [(entry_id, term_hash), ...])
-    """
-    async with aiosqlite.connect(DB_PATH) as conn:
-        await conn.execute("PRAGMA foreign_keys = ON;")
-        # All operations in one transaction
+    """Atomically re-encrypt all data and update user credentials in one transaction."""
+    async with _connect() as conn:
+        # Entry title/body/map/mood/weather
         for eu in entry_updates:
             await conn.execute(
                 """
                 UPDATE entries
                    SET title_nonce = ?, title_ct = ?,
                        body_nonce = ?, body_ct = ?,
-                       map_nonce = ?, map_ct = ?, map_format = ?
+                       map_nonce = ?, map_ct = ?, map_format = ?,
+                       mood_nonce = ?, mood_ct = ?,
+                       weather_nonce = ?, weather_ct = ?
                  WHERE id = ? AND user_id = ?
                 """,
                 (
                     eu["title_nonce"], eu["title_ct"],
                     eu["body_nonce"], eu["body_ct"],
                     eu["map_nonce"], eu["map_ct"], eu["map_format"],
+                    eu.get("mood_nonce"), eu.get("mood_ct"),
+                    eu.get("weather_nonce"), eu.get("weather_ct"),
                     eu["id"], user_id,
                 ),
             )
@@ -574,6 +620,30 @@ async def change_password_atomically(
                     "INSERT OR IGNORE INTO entry_terms (entry_id, term_hash) VALUES (?, ?)",
                     pairs,
                 )
+        # Tags
+        for tu in (tag_updates or []):
+            await conn.execute(
+                "UPDATE entry_tags SET tag_nonce = ?, tag_ct = ?, tag_hash = ? WHERE id = ?",
+                (tu["tag_nonce"], tu["tag_ct"], tu["tag_hash"], tu["id"]),
+            )
+        # Notebooks
+        for nu in (notebook_updates or []):
+            await conn.execute(
+                "UPDATE notebooks SET name_nonce = ?, name_ct = ? WHERE id = ?",
+                (nu["name_nonce"], nu["name_ct"], nu["id"]),
+            )
+        # Templates
+        for tu in (template_updates or []):
+            await conn.execute(
+                "UPDATE entry_templates SET title_nonce = ?, title_ct = ?, body_nonce = ?, body_ct = ? WHERE id = ?",
+                (tu["title_nonce"], tu["title_ct"], tu["body_nonce"], tu["body_ct"], tu["id"]),
+            )
+        # Drafts
+        for du in (draft_updates or []):
+            await conn.execute(
+                "UPDATE drafts SET title_nonce = ?, title_ct = ?, body_nonce = ?, body_ct = ? WHERE id = ?",
+                (du["title_nonce"], du["title_ct"], du["body_nonce"], du["body_ct"], du["id"]),
+            )
         # Update user credentials last
         await conn.execute(
             """
@@ -588,7 +658,7 @@ async def change_password_atomically(
 
 async def clear_entry_terms(entry_id: int) -> None:
     """Remove all term rows for an entry (used when re-indexing after edit)."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         await db.execute("DELETE FROM entry_terms WHERE entry_id = ?", (entry_id,))
         await db.commit()
 
@@ -599,7 +669,7 @@ async def clear_entry_terms(entry_id: int) -> None:
 
 async def toggle_favorite(entry_id: int, user_id: int) -> bool:
     """Toggle is_favorite for an entry. Returns new state."""
-    async with aiosqlite.connect(DB_PATH) as conn:
+    async with _connect() as conn:
         cur = await conn.execute(
             "SELECT is_favorite FROM entries WHERE id = ? AND user_id = ?",
             (entry_id, user_id),
@@ -619,7 +689,7 @@ async def toggle_favorite(entry_id: int, user_id: int) -> bool:
 
 async def update_word_count(entry_id: int, user_id: int, count: int) -> None:
     """Set word_count for an entry."""
-    async with aiosqlite.connect(DB_PATH) as conn:
+    async with _connect() as conn:
         await conn.execute(
             "UPDATE entries SET word_count = ? WHERE id = ? AND user_id = ?",
             (count, entry_id, user_id),
@@ -639,11 +709,11 @@ async def list_entry_headers_in_range(
 ) -> list:
     """Return entry headers within a date range."""
     order = "ASC" if sort_asc else "DESC"
-    async with aiosqlite.connect(DB_PATH) as conn:
+    async with _connect() as conn:
         conn.row_factory = aiosqlite.Row
         cur = await conn.execute(
             f"""
-            SELECT id, created_at, title_nonce, title_ct, is_favorite, word_count
+            SELECT id, created_at, title_nonce, title_ct, is_favorite, word_count, mood_nonce, mood_ct
               FROM entries
              WHERE user_id = ? AND created_at BETWEEN ? AND ?
              ORDER BY is_favorite DESC, created_at {order}
@@ -666,7 +736,7 @@ async def list_entry_headers_sorted(
     order = "ASC" if sort_asc else "DESC"
     if notebook_id is not None:
         query = f"""
-            SELECT id, created_at, title_nonce, title_ct, is_favorite, word_count
+            SELECT id, created_at, title_nonce, title_ct, is_favorite, word_count, mood_nonce, mood_ct
               FROM entries
              WHERE user_id = ? AND notebook_id = ?
              ORDER BY is_favorite DESC, created_at {order}
@@ -675,14 +745,14 @@ async def list_entry_headers_sorted(
         params = (user_id, notebook_id, limit, offset)
     else:
         query = f"""
-            SELECT id, created_at, title_nonce, title_ct, is_favorite, word_count
+            SELECT id, created_at, title_nonce, title_ct, is_favorite, word_count, mood_nonce, mood_ct
               FROM entries
              WHERE user_id = ?
              ORDER BY is_favorite DESC, created_at {order}
              LIMIT ? OFFSET ?
         """
         params = (user_id, limit, offset)
-    async with aiosqlite.connect(DB_PATH) as conn:
+    async with _connect() as conn:
         conn.row_factory = aiosqlite.Row
         cur = await conn.execute(query, params)
         rows = await cur.fetchall()
@@ -692,7 +762,7 @@ async def list_entry_headers_sorted(
 
 async def count_entries(user_id: int, notebook_id: Optional[int] = None) -> int:
     """Return total entry count for pagination."""
-    async with aiosqlite.connect(DB_PATH) as conn:
+    async with _connect() as conn:
         if notebook_id is not None:
             cur = await conn.execute(
                 "SELECT count(*) FROM entries WHERE user_id = ? AND notebook_id = ?",
@@ -716,7 +786,7 @@ async def insert_entry_tag(
     entry_id: int, tag_nonce: bytes, tag_ct: bytes, tag_hash: bytes
 ) -> int:
     """Insert an encrypted tag for an entry."""
-    async with aiosqlite.connect(DB_PATH) as conn:
+    async with _connect() as conn:
         cur = await conn.execute(
             "INSERT INTO entry_tags (entry_id, tag_nonce, tag_ct, tag_hash) VALUES (?, ?, ?, ?)",
             (entry_id, tag_nonce, tag_ct, tag_hash),
@@ -727,14 +797,14 @@ async def insert_entry_tag(
 
 async def delete_entry_tag(tag_id: int) -> None:
     """Delete a tag by its id."""
-    async with aiosqlite.connect(DB_PATH) as conn:
+    async with _connect() as conn:
         await conn.execute("DELETE FROM entry_tags WHERE id = ?", (tag_id,))
         await conn.commit()
 
 
 async def get_tags_for_entry(entry_id: int) -> list:
     """Return all tag rows for an entry."""
-    async with aiosqlite.connect(DB_PATH) as conn:
+    async with _connect() as conn:
         conn.row_factory = aiosqlite.Row
         cur = await conn.execute(
             "SELECT id, tag_nonce, tag_ct, tag_hash FROM entry_tags WHERE entry_id = ?",
@@ -747,7 +817,7 @@ async def get_tags_for_entry(entry_id: int) -> list:
 
 async def get_entry_ids_for_tag_hash(tag_hash: bytes) -> List[int]:
     """Return entry ids that have a tag matching the given hash."""
-    async with aiosqlite.connect(DB_PATH) as conn:
+    async with _connect() as conn:
         cur = await conn.execute(
             "SELECT DISTINCT entry_id FROM entry_tags WHERE tag_hash = ?",
             (tag_hash,),
@@ -770,7 +840,7 @@ async def update_entry_mood_weather(
     weather_ct: Optional[bytes],
 ) -> None:
     """Update encrypted mood and weather for an entry."""
-    async with aiosqlite.connect(DB_PATH) as conn:
+    async with _connect() as conn:
         await conn.execute(
             """
             UPDATE entries
@@ -785,7 +855,7 @@ async def update_entry_mood_weather(
 
 async def get_entry_row_full(user_id: int, entry_id: int):
     """Return a full entry row including mood/weather/favorite/notebook."""
-    async with aiosqlite.connect(DB_PATH) as conn:
+    async with _connect() as conn:
         conn.row_factory = aiosqlite.Row
         cur = await conn.execute(
             """
@@ -815,7 +885,7 @@ async def insert_notebook(
     user_id: int, name_nonce: bytes, name_ct: bytes, created_at: str
 ) -> int:
     """Create a new notebook."""
-    async with aiosqlite.connect(DB_PATH) as conn:
+    async with _connect() as conn:
         cur = await conn.execute(
             """
             INSERT INTO notebooks (user_id, name_nonce, name_ct, created_at)
@@ -829,7 +899,7 @@ async def insert_notebook(
 
 async def list_notebooks(user_id: int) -> list:
     """Return all notebooks for a user."""
-    async with aiosqlite.connect(DB_PATH) as conn:
+    async with _connect() as conn:
         conn.row_factory = aiosqlite.Row
         cur = await conn.execute(
             "SELECT id, name_nonce, name_ct, created_at, sort_order FROM notebooks WHERE user_id = ? ORDER BY sort_order, created_at",
@@ -842,7 +912,7 @@ async def list_notebooks(user_id: int) -> list:
 
 async def delete_notebook(notebook_id: int, user_id: int) -> None:
     """Delete a notebook (entries are unlinked via SET NULL)."""
-    async with aiosqlite.connect(DB_PATH) as conn:
+    async with _connect() as conn:
         await conn.execute(
             "DELETE FROM notebooks WHERE id = ? AND user_id = ?",
             (notebook_id, user_id),
@@ -852,7 +922,7 @@ async def delete_notebook(notebook_id: int, user_id: int) -> None:
 
 async def set_entry_notebook(entry_id: int, user_id: int, notebook_id: Optional[int]) -> None:
     """Assign an entry to a notebook (or None to unassign)."""
-    async with aiosqlite.connect(DB_PATH) as conn:
+    async with _connect() as conn:
         await conn.execute(
             "UPDATE entries SET notebook_id = ? WHERE id = ? AND user_id = ?",
             (notebook_id, entry_id, user_id),
@@ -874,7 +944,7 @@ async def insert_template(
     created_at: str,
 ) -> int:
     """Create a new entry template."""
-    async with aiosqlite.connect(DB_PATH) as conn:
+    async with _connect() as conn:
         cur = await conn.execute(
             """
             INSERT INTO entry_templates (user_id, name, title_nonce, title_ct, body_nonce, body_ct, created_at)
@@ -888,7 +958,7 @@ async def insert_template(
 
 async def list_templates(user_id: int) -> list:
     """Return all templates for a user."""
-    async with aiosqlite.connect(DB_PATH) as conn:
+    async with _connect() as conn:
         conn.row_factory = aiosqlite.Row
         cur = await conn.execute(
             "SELECT id, name, title_nonce, title_ct, body_nonce, body_ct FROM entry_templates WHERE user_id = ? ORDER BY name",
@@ -901,7 +971,7 @@ async def list_templates(user_id: int) -> list:
 
 async def get_template(template_id: int, user_id: int):
     """Return a single template row."""
-    async with aiosqlite.connect(DB_PATH) as conn:
+    async with _connect() as conn:
         conn.row_factory = aiosqlite.Row
         cur = await conn.execute(
             "SELECT id, name, title_nonce, title_ct, body_nonce, body_ct FROM entry_templates WHERE id = ? AND user_id = ?",
@@ -914,7 +984,7 @@ async def get_template(template_id: int, user_id: int):
 
 async def delete_template(template_id: int, user_id: int) -> None:
     """Delete a template."""
-    async with aiosqlite.connect(DB_PATH) as conn:
+    async with _connect() as conn:
         await conn.execute(
             "DELETE FROM entry_templates WHERE id = ? AND user_id = ?",
             (template_id, user_id),
@@ -933,7 +1003,7 @@ async def get_entry_dates_for_month(user_id: int, year: int, month: int) -> list
         end = f"{year + 1:04d}-01-01"
     else:
         end = f"{year:04d}-{month + 1:02d}-01"
-    async with aiosqlite.connect(DB_PATH) as conn:
+    async with _connect() as conn:
         cur = await conn.execute(
             """
             SELECT substr(created_at, 1, 10) as day, count(*) as cnt
@@ -962,7 +1032,7 @@ async def upsert_draft(
     saved_at: str,
 ) -> int:
     """Insert or update a draft for the given user/entry_id pair."""
-    async with aiosqlite.connect(DB_PATH) as conn:
+    async with _connect() as conn:
         if entry_id is not None:
             # Check if draft exists for this entry
             cur = await conn.execute(
@@ -1002,7 +1072,7 @@ async def upsert_draft(
 
 async def get_draft(user_id: int, entry_id: Optional[int] = None):
     """Return the draft for a user/entry_id pair, or None."""
-    async with aiosqlite.connect(DB_PATH) as conn:
+    async with _connect() as conn:
         conn.row_factory = aiosqlite.Row
         if entry_id is not None:
             cur = await conn.execute(
@@ -1021,13 +1091,13 @@ async def get_draft(user_id: int, entry_id: Optional[int] = None):
 
 async def delete_draft(draft_id: int) -> None:
     """Delete a draft by id."""
-    async with aiosqlite.connect(DB_PATH) as conn:
+    async with _connect() as conn:
         await conn.execute("DELETE FROM drafts WHERE id = ?", (draft_id,))
         await conn.commit()
 
 
 async def delete_drafts_for_user(user_id: int) -> None:
     """Delete all drafts for a user."""
-    async with aiosqlite.connect(DB_PATH) as conn:
+    async with _connect() as conn:
         await conn.execute("DELETE FROM drafts WHERE user_id = ?", (user_id,))
         await conn.commit()

@@ -6,6 +6,8 @@ import heapq
 import json
 from typing import Optional
 
+import aiosqlite
+
 from cyberjournal.world import world_db
 
 # Biome → resource production
@@ -57,8 +59,8 @@ def get_biome_resources(biome: str) -> list[str]:
 
 async def get_settlement_production(entity_id: int) -> list[str]:
     """Determine what resources a settlement produces based on surrounding biomes."""
-    async with __import__("aiosqlite").connect(world_db.WORLD_DB_PATH) as conn:
-        conn.row_factory = __import__("aiosqlite").Row
+    async with aiosqlite.connect(world_db.WORLD_DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
         cur = await conn.execute(
             "SELECT x, y FROM world_entities WHERE id = ?", (entity_id,)
         )
@@ -123,7 +125,6 @@ def find_path(
 
 async def generate_trade_routes() -> list[list[tuple[int, int]]]:
     """Generate trade routes between settlements using pathfinding."""
-    import aiosqlite
     async with aiosqlite.connect(world_db.WORLD_DB_PATH) as conn:
         conn.row_factory = aiosqlite.Row
         cur = await conn.execute(

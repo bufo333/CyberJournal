@@ -68,7 +68,38 @@ class WorldExplorerScreen(Screen):
         raw = await world_db.get_meta("discovered_positions")
         if raw:
             self.discovered = {tuple(p) for p in json.loads(raw)}
+
+        # Check if world is empty — rebuild from existing entries if needed
+        await world_db.init_world_db()
+        placements_raw = await world_db.get_meta("chunk_placements")
+        if not placements_raw or placements_raw == "{}":
+            if hasattr(self.app, "session") and self.app.session:
+                try:
+                    from cyberjournal.logic import rebuild_world
+                    count = await rebuild_world(self.app.session)
+                    if count > 0:
+                        self.notify(f"World generated from {count} existing entries")
+                except Exception:
+                    logger.exception("Failed to rebuild world from entries")
+
+        # Center cursor on the world content (first entry's chunk center)
+        await self._center_on_world()
         await self._refresh_view()
+
+    async def _center_on_world(self) -> None:
+        """Move cursor to the center of the world's content."""
+        from cyberjournal.world.grid import CHUNK_W, CHUNK_H
+        placements_raw = await world_db.get_meta("chunk_placements")
+        if not placements_raw or placements_raw == "{}":
+            return
+        placements = json.loads(placements_raw)
+        if not placements:
+            return
+        # Find the first entry's chunk (entry ID "1" or the lowest ID)
+        first_key = min(placements.keys(), key=lambda k: int(k))
+        cx, cy = placements[first_key]
+        self.cursor_x = cx * CHUNK_W + CHUNK_W // 2
+        self.cursor_y = cy * CHUNK_H + CHUNK_H // 2
 
     async def _refresh_view(self) -> None:
         """Re-render the viewport around the cursor."""

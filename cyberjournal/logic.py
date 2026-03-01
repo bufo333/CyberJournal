@@ -217,53 +217,96 @@ async def change_password_logged_in(
     new_enc_key = hkdf_derive(new_dek, HKDF_INFO_ENC, 32)
     new_search_key = hkdf_derive(new_dek, HKDF_INFO_HMAC, 32)
 
-    # Re-encrypt all entries in memory first, then commit atomically
+    # Re-encrypt all data in memory first, then commit atomically
+    aad = sess.username.encode()
+
+    def _reenc(old_nonce, old_ct):
+        """Decrypt with old key, re-encrypt with new key. Returns (nonce, ct)."""
+        plaintext = aesgcm_decrypt(sess.enc_key, old_nonce, old_ct, aad=aad)
+        return aesgcm_encrypt(new_enc_key, plaintext, aad=aad)
+
+    # --- Entries ---
     rows = await db.list_entry_rows_for_user(sess.user_id)
     entry_updates = []
     term_updates = []
     for entry in rows:
-        title = aesgcm_decrypt(
-            sess.enc_key,
-            entry["title_nonce"],
-            entry["title_ct"],
-            aad=sess.username.encode(),
-        ).decode()
-        body = aesgcm_decrypt(
-            sess.enc_key,
-            entry["body_nonce"],
-            entry["body_ct"],
-            aad=sess.username.encode(),
-        ).decode()
+        title = aesgcm_decrypt(sess.enc_key, entry["title_nonce"], entry["title_ct"], aad=aad).decode()
+        body = aesgcm_decrypt(sess.enc_key, entry["body_nonce"], entry["body_ct"], aad=aad).decode()
 
-        map_nonce = None
-        map_ct = None
+        t_nonce, t_ct = aesgcm_encrypt(new_enc_key, title.encode(), aad=aad)
+        b_nonce, b_ct = aesgcm_encrypt(new_enc_key, body.encode(), aad=aad)
+
+        map_nonce = map_ct = None
         map_format = entry["map_format"] or "ascii"
         if entry["map_ct"]:
-            map_text = aesgcm_decrypt(
-                sess.enc_key,
-                entry["map_nonce"],
-                entry["map_ct"],
-                aad=sess.username.encode(),
-            ).decode()
-            map_nonce, map_ct = aesgcm_encrypt(
-                new_enc_key,
-                map_text.encode("utf-8"),
-                aad=sess.username.encode(),
-            )
+            map_nonce, map_ct = _reenc(entry["map_nonce"], entry["map_ct"])
 
-        t_nonce, t_ct = aesgcm_encrypt(new_enc_key, title.encode(), aad=sess.username.encode())
-        b_nonce, b_ct = aesgcm_encrypt(new_enc_key, body.encode(), aad=sess.username.encode())
+        mood_nonce = mood_ct = None
+        if entry["mood_ct"]:
+            mood_nonce, mood_ct = _reenc(entry["mood_nonce"], entry["mood_ct"])
+
+        weather_nonce = weather_ct = None
+        if entry["weather_ct"]:
+            weather_nonce, weather_ct = _reenc(entry["weather_nonce"], entry["weather_ct"])
+
         entry_updates.append({
             "id": entry["id"],
             "title_nonce": t_nonce, "title_ct": t_ct,
             "body_nonce": b_nonce, "body_ct": b_ct,
-            "map_nonce": map_nonce, "map_ct": map_ct,
-            "map_format": map_format,
+            "map_nonce": map_nonce, "map_ct": map_ct, "map_format": map_format,
+            "mood_nonce": mood_nonce, "mood_ct": mood_ct,
+            "weather_nonce": weather_nonce, "weather_ct": weather_ct,
         })
 
         terms: Set[str] = set(normalize_tokens(title) + normalize_tokens(body))
         pairs = [(entry["id"], hmac_token(new_search_key, t)) for t in terms]
         term_updates.append((entry["id"], pairs))
+
+    # --- Tags ---
+    tag_rows = await db.list_all_tags_for_user(sess.user_id)
+    tag_updates = []
+    for tag in tag_rows:
+        tag_text = aesgcm_decrypt(sess.enc_key, tag["tag_nonce"], tag["tag_ct"], aad=aad).decode()
+        new_tag_nonce, new_tag_ct = aesgcm_encrypt(new_enc_key, tag_text.encode(), aad=aad)
+        new_tag_hash = hmac_token(new_search_key, tag_text.lower())
+        tag_updates.append({
+            "id": tag["id"],
+            "tag_nonce": new_tag_nonce, "tag_ct": new_tag_ct, "tag_hash": new_tag_hash,
+        })
+
+    # --- Notebooks ---
+    nb_rows = await db.list_notebooks(sess.user_id)
+    notebook_updates = []
+    for nb in nb_rows:
+        nb_name = aesgcm_decrypt(sess.enc_key, nb["name_nonce"], nb["name_ct"], aad=aad).decode()
+        new_nb_nonce, new_nb_ct = aesgcm_encrypt(new_enc_key, nb_name.encode(), aad=aad)
+        notebook_updates.append({
+            "id": nb["id"], "name_nonce": new_nb_nonce, "name_ct": new_nb_ct,
+        })
+
+    # --- Templates ---
+    tpl_rows = await db.list_templates(sess.user_id)
+    template_updates = []
+    for tpl in tpl_rows:
+        tpl_title = aesgcm_decrypt(sess.enc_key, tpl["title_nonce"], tpl["title_ct"], aad=aad).decode()
+        tpl_body = aesgcm_decrypt(sess.enc_key, tpl["body_nonce"], tpl["body_ct"], aad=aad).decode()
+        tn, tc = aesgcm_encrypt(new_enc_key, tpl_title.encode(), aad=aad)
+        bn, bc = aesgcm_encrypt(new_enc_key, tpl_body.encode(), aad=aad)
+        template_updates.append({
+            "id": tpl["id"], "title_nonce": tn, "title_ct": tc, "body_nonce": bn, "body_ct": bc,
+        })
+
+    # --- Drafts ---
+    draft_rows = await db.list_all_drafts_for_user(sess.user_id)
+    draft_updates = []
+    for dr in draft_rows:
+        dr_title = aesgcm_decrypt(sess.enc_key, dr["title_nonce"], dr["title_ct"], aad=aad).decode()
+        dr_body = aesgcm_decrypt(sess.enc_key, dr["body_nonce"], dr["body_ct"], aad=aad).decode()
+        dn, dc = aesgcm_encrypt(new_enc_key, dr_title.encode(), aad=aad)
+        dbn, dbc = aesgcm_encrypt(new_enc_key, dr_body.encode(), aad=aad)
+        draft_updates.append({
+            "id": dr["id"], "title_nonce": dn, "title_ct": dc, "body_nonce": dbn, "body_ct": dbc,
+        })
 
     await db.change_password_atomically(
         sess.user_id,
@@ -273,6 +316,10 @@ async def change_password_logged_in(
         new_nonce,
         entry_updates,
         term_updates,
+        tag_updates=tag_updates,
+        notebook_updates=notebook_updates,
+        template_updates=template_updates,
+        draft_updates=draft_updates,
     )
 
     return SessionKeys(
@@ -433,6 +480,35 @@ async def delete_entry(sess: SessionKeys, entry_id: int) -> None:
         logger.debug("World hook skipped", exc_info=True)
 
 
+async def rebuild_world(sess: SessionKeys) -> int:
+    """Rebuild the world from all existing entries. Returns count of entries processed."""
+    from cyberjournal.world.hooks import on_entry_created
+
+    entries = await list_entries(sess)
+    count = 0
+    for eid, created_at, title in entries:
+        # Check if entry already has a chunk in the world
+        from cyberjournal.world.grid import get_chunk_placements
+        placements = await get_chunk_placements()
+        if eid in placements:
+            continue
+
+        # Get full entry body for world generation
+        _, _, body = await get_entry(sess, eid)
+        # Get mood if available
+        mood = ""
+        try:
+            full = await get_entry_full(sess, eid)
+            mood = full.get("mood", "")
+        except Exception:
+            pass
+        wc = _word_count(f"{title} {body}")
+        await on_entry_created(eid, title, body, word_count=wc, mood=mood)
+        count += 1
+
+    return count
+
+
 async def list_entries(sess: SessionKeys) -> List[Tuple[int, str, str]]:
     """Return list of (id, created_at iso, decrypted_title)."""
     rows = await db.list_entry_headers(sess.user_id)
@@ -566,15 +642,20 @@ async def list_entries_paginated(
     notebook_id: int | None = None,
     limit: int = 50,
     offset: int = 0,
-) -> List[Tuple[int, str, str, bool, int]]:
-    """Return paginated entries: (id, created_at, title, is_favorite, word_count)."""
+) -> List[Tuple[int, str, str, bool, int, str]]:
+    """Return paginated entries: (id, created_at, title, is_favorite, word_count, mood)."""
     rows = await db.list_entry_headers_sorted(sess.user_id, sort_asc, notebook_id, limit, offset)
+    aad = sess.username.encode()
     out = []
     for r in rows:
-        title = aesgcm_decrypt(
-            sess.enc_key, r["title_nonce"], r["title_ct"], aad=sess.username.encode()
-        ).decode()
-        out.append((r["id"], r["created_at"], title, bool(r["is_favorite"]), r["word_count"] or 0))
+        title = aesgcm_decrypt(sess.enc_key, r["title_nonce"], r["title_ct"], aad=aad).decode()
+        mood = ""
+        if r["mood_ct"]:
+            try:
+                mood = aesgcm_decrypt(sess.enc_key, r["mood_nonce"], r["mood_ct"], aad=aad).decode()
+            except Exception:
+                pass
+        out.append((r["id"], r["created_at"], title, bool(r["is_favorite"]), r["word_count"] or 0, mood))
     return out
 
 
@@ -756,8 +837,12 @@ async def export_entries(sess: SessionKeys, fmt: str = "json") -> str:
 async def import_entries(sess: SessionKeys, data: str) -> int:
     """Import entries from JSON string. Returns number imported."""
     entries = json.loads(data)
+    if not isinstance(entries, list):
+        raise ValueError("Expected a JSON array of entries")
     count = 0
     for e in entries:
+        if not isinstance(e, dict):
+            continue
         title = e.get("title", "")
         body = e.get("body", "")
         if title or body:
