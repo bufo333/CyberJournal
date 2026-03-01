@@ -196,7 +196,7 @@ TabbedContent { height: 1fr; }
 .theme-vt220 Button.-primary:hover { background: #003300; }
 
 .theme-vt220 #map, .theme-vt220 #entry-text { border: round #00cc66; }
-.theme-vt220 #world-map { border: round #00cc66; }
+.theme-vt220 #world-map { border: round #00cc66; color: auto; }
 
 .theme-vt220 ContentSwitcher { background: #001100; }
 .theme-vt220 TabPane { background: #001100; }
@@ -243,7 +243,7 @@ TabbedContent { height: 1fr; }
 .theme-amber Button.-primary:hover { background: #332200; }
 
 .theme-amber #map, .theme-amber #entry-text { border: round #ff9900; }
-.theme-amber #world-map { border: round #ff9900; }
+.theme-amber #world-map { border: round #ff9900; color: auto; }
 
 .theme-amber ContentSwitcher { background: #1a1200; }
 .theme-amber TabPane { background: #1a1200; }
@@ -290,7 +290,7 @@ TabbedContent { height: 1fr; }
 .theme-neon Button.-primary:hover { background: #181830; }
 
 .theme-neon #map, .theme-neon #entry-text { border: round #6a00ff; }
-.theme-neon #world-map { border: round #6a00ff; }
+.theme-neon #world-map { border: round #6a00ff; color: auto; }
 
 .theme-neon ContentSwitcher { background: #0a0a12; }
 .theme-neon TabPane { background: #0a0a12; }

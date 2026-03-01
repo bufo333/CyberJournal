@@ -224,6 +224,19 @@ async def get_history(limit: int = 100) -> list:
         return rows
 
 
+async def get_all_tiles_sampled(step: int = 4) -> list:
+    """Return sampled tiles for minimap rendering."""
+    async with aiosqlite.connect(WORLD_DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cur = await conn.execute(
+            "SELECT * FROM world_tiles WHERE x % ? = 0 AND y % ? = 0",
+            (step, step),
+        )
+        rows = await cur.fetchall()
+        await cur.close()
+        return rows
+
+
 async def get_current_turn() -> int:
     """Return the current world turn (number of entries processed)."""
     val = await get_meta("current_turn")

@@ -8,6 +8,32 @@ from __future__ import annotations
 from cyberjournal.map import PALETTE, SYMBOLS_UTF, SYMBOLS_ASCII, _fg, ANSI_RESET
 from cyberjournal.world.biomes import ENTITY_TYPES
 
+# Map ANSI color codes to Rich color names for Textual markup
+_ANSI_TO_RICH = {
+    "31": "red", "32": "green", "33": "yellow", "34": "blue",
+    "35": "magenta", "36": "cyan", "37": "white",
+    "90": "bright_black", "91": "bright_red", "92": "bright_green",
+    "93": "bright_yellow", "94": "bright_blue", "95": "bright_magenta",
+    "96": "bright_cyan", "97": "bright_white",
+}
+
+
+def _rich_fg(code: str, ch: str) -> str:
+    """Wrap a character in Rich markup color tags.
+
+    Handles compound ANSI codes like '32;1' (color + bold).
+    """
+    escaped = ch.replace("[", "\\[")
+    parts = code.split(";")
+    color_code = parts[0]
+    bold = "1" in parts[1:]
+    color_name = _ANSI_TO_RICH.get(color_code)
+    if not color_name:
+        return escaped
+    if bold:
+        return f"[bold {color_name}]{escaped}[/bold {color_name}]"
+    return f"[{color_name}]{escaped}[/{color_name}]"
+
 
 # Map biome → terrain type for rendering
 BIOME_TO_TERRAIN = {
@@ -31,6 +57,89 @@ BIOME_TO_TERRAIN = {
 }
 
 
+def build_minimap_overlay(
+    tiles: list,
+    entities: list,
+    cursor_x: int,
+    cursor_y: int,
+    viewport_w: int,
+    width: int = 16,
+    height: int = 8,
+) -> dict[tuple[int, int], str]:
+    """Build a minimap as a dict of (viewport_col, viewport_row) -> char.
+
+    Positioned in the top-right corner of the viewport.
+    Returns empty dict if no tiles.
+    """
+    if not tiles:
+        return {}
+
+    # Find world bounding box
+    all_x = [t["x"] for t in tiles]
+    all_y = [t["y"] for t in tiles]
+    min_x, max_x = min(all_x), max(all_x)
+    min_y, max_y = min(all_y), max(all_y)
+    world_w = max(1, max_x - min_x + 1)
+    world_h = max(1, max_y - min_y + 1)
+
+    sx = max(1, world_w // width)
+    sy = max(1, world_h // height)
+
+    grid: dict[tuple[int, int], str] = {}
+    for t in tiles:
+        gx = (t["x"] - min_x) // sx
+        gy = (t["y"] - min_y) // sy
+        if 0 <= gx < width and 0 <= gy < height:
+            grid[(gx, gy)] = SYMBOLS_UTF.get(t["terrain"], ".")
+
+    for e in entities:
+        gx = (e["x"] - min_x) // sx
+        gy = (e["y"] - min_y) // sy
+        if 0 <= gx < width and 0 <= gy < height:
+            grid[(gx, gy)] = ENTITY_TYPES.get(e["type"], {}).get("symbol", "?")
+
+    px = (cursor_x - min_x) // sx
+    py = (cursor_y - min_y) // sy
+
+    # Build minimap lines (with border)
+    box_w = width + 2  # border chars
+    box_h = height + 2
+    start_col = viewport_w - box_w - 1
+
+    if start_col < 0:
+        return {}
+
+    overlay: dict[tuple[int, int], str] = {}
+
+    # Top border
+    overlay[(start_col, 0)] = "\u250c"
+    for i in range(width):
+        overlay[(start_col + 1 + i, 0)] = "\u2500"
+    overlay[(start_col + width + 1, 0)] = "\u2510"
+
+    # Content rows
+    for y in range(height):
+        row_y = y + 1
+        overlay[(start_col, row_y)] = "\u2502"
+        for x in range(width):
+            if x == px and y == py:
+                overlay[(start_col + 1 + x, row_y)] = "@"
+            elif (x, y) in grid:
+                overlay[(start_col + 1 + x, row_y)] = grid[(x, y)]
+            else:
+                overlay[(start_col + 1 + x, row_y)] = " "
+        overlay[(start_col + width + 1, row_y)] = "\u2502"
+
+    # Bottom border
+    bot_y = height + 1
+    overlay[(start_col, bot_y)] = "\u2514"
+    for i in range(width):
+        overlay[(start_col + 1 + i, bot_y)] = "\u2500"
+    overlay[(start_col + width + 1, bot_y)] = "\u2518"
+
+    return overlay
+
+
 def render_world_viewport(
     tiles: list,
     entities: list,
@@ -42,6 +151,8 @@ def render_world_viewport(
     cursor_y: int,
     color: bool = False,
     charset: str = "utf",
+    palette: dict | None = None,
+    minimap_overlay: dict[tuple[int, int], str] | None = None,
 ) -> str:
     """Render a rectangular viewport of the world.
 
@@ -94,9 +205,18 @@ def render_world_viewport(
                 ch = " "
                 tile_type = "unknown"
 
+            # Minimap overlay takes priority (except for cursor)
+            if not is_cursor and minimap_overlay and (dx, dy) in minimap_overlay:
+                mm_ch = minimap_overlay[(dx, dy)]
+                if color:
+                    row_chars.append(_rich_fg("97", mm_ch))  # bright white
+                else:
+                    row_chars.append(mm_ch)
+                continue
+
             if is_cursor:
                 if color:
-                    row_chars.append(f"\x1b[7m@\x1b[0m")  # inverse video
+                    row_chars.append("[reverse]@[/reverse]")
                 else:
                     row_chars.append("@")
             elif is_crosshair and tile_type == "unknown":
@@ -106,16 +226,20 @@ def render_world_viewport(
                 else:
                     row_chars.append("-")
             elif color and tile_type != "unknown":
-                code = PALETTE.get(tile_type, PALETTE.get("unknown", "37"))
-                row_chars.append(f"{_fg(code)}{ch}{ANSI_RESET}")
+                pal = palette or PALETTE
+                code = pal.get(tile_type, pal.get("unknown", "37"))
+                row_chars.append(_rich_fg(code, ch))
             else:
-                row_chars.append(ch)
+                if color:
+                    row_chars.append(ch.replace("[", "\\["))
+                else:
+                    row_chars.append(ch)
 
         lines.append("".join(row_chars))
 
     if not has_content:
         # Overlay a help message in the center of the viewport
-        msg = "[ Empty world — create journal entries to generate terrain ]"
+        msg = "\\[ Empty world — create journal entries to generate terrain ]"
         center_y = viewport_h // 2 + 2
         if center_y < len(lines):
             line = lines[center_y]

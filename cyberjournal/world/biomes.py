@@ -57,6 +57,7 @@ ENTITY_TYPES = {
     "shrine": {"symbol": "+", "description": "A contemplation shrine"},
     "npc": {"symbol": "P", "description": "A person of the world"},
     "hidden_landmark": {"symbol": "?", "description": "Something hidden nearby..."},
+    "structure": {"symbol": "#", "description": "A player-built structure"},
 }
 
 

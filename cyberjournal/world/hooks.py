@@ -101,6 +101,13 @@ async def on_entry_created(
         # Generate quests from entry themes
         await generate_quests(entry_id, title, body, mood, chunk_pos[0], chunk_pos[1], turn)
 
+        # Award XP for writing an entry
+        try:
+            from cyberjournal.world.player_stats import increment_stat
+            await increment_stat("entries_written")
+        except Exception:
+            logger.debug("Could not award entry XP")
+
         # Place hidden landmarks for discovery mechanics
         # Older entries become "ancient texts" discoverable near their chunk edges
         from cyberjournal.map import text_seed
