@@ -188,8 +188,8 @@ def text_to_map(text: str, width: Optional[int] = None, height: Optional[int] = 
     for y in range(h):
         for x in range(w):
             # jitter scale based on seed so different texts "feel" different
-            scale_e = 10.0 + (seed % 7)
-            scale_m = 14.0 + (seed % 11)
+            scale_e = 8.0 + (seed % 97) * 0.2
+            scale_m = 10.0 + ((seed >> 16) % 89) * 0.25
             elev = noise(seed ^ 0xA57E, x, y, scale=scale_e, octaves=4, persistence=0.55)
             moist = noise(seed ^ 0xBEEF, x+1000, y-777, scale=scale_m, octaves=3, persistence=0.6)
             elev_map[y][x] = elev
