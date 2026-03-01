@@ -672,31 +672,59 @@ class TemplateModal(ModalScreen[None]):
 
 
 class ExportModal(ModalScreen[None]):
-    """Export entries to file."""
+    """Export entries to file or copy from text area."""
 
     def compose(self) -> ComposeResult:
         yield Container(
             Static("EXPORT ENTRIES", classes="title"),
-            Static("Choose format, then copy from the output below.", classes="hint"),
+            Static("Choose format to preview, then copy or save to file.", classes="hint"),
             Horizontal(
                 Button("JSON", id="exp_json", classes="-primary"),
                 Button("Markdown", id="exp_md"),
             ),
             TextArea(id="export_output", read_only=True),
-            Button("Close", id="close"),
+            Horizontal(
+                Button("Save to File", id="exp_save", classes="-primary"),
+                Button("Close", id="close"),
+            ),
             id="narrow-card", classes="layer-ui",
         )
+
+    async def on_mount(self) -> None:
+        self._export_data = ""
+        self._export_fmt = ""
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id or ""
         if bid == "exp_json":
             data = await export_entries(self.app.session, "json")
+            self._export_data = data
+            self._export_fmt = "json"
             self.query_one("#export_output", TextArea).text = data
-            self.app.notify("Exported as JSON — copy from the text area")
+            self.app.notify("Exported as JSON — copy from text area or save to file")
         elif bid == "exp_md":
             data = await export_entries(self.app.session, "markdown")
+            self._export_data = data
+            self._export_fmt = "markdown"
             self.query_one("#export_output", TextArea).text = data
-            self.app.notify("Exported as Markdown — copy from the text area")
+            self.app.notify("Exported as Markdown — copy from text area or save to file")
+        elif bid == "exp_save":
+            if not self._export_data:
+                self.app.notify("Choose a format first (JSON or Markdown)")
+                return
+            import os
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            ext = "json" if self._export_fmt == "json" else "md"
+            filename = f"cyberjournal_export_{timestamp}.{ext}"
+            # Save to user's home directory
+            path = os.path.join(os.path.expanduser("~"), filename)
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(self._export_data)
+                self.app.notify(f"Saved to {path}")
+            except OSError as e:
+                self.app.notify(f"Failed to save: {e}")
         elif bid == "close":
             self.dismiss()
 
